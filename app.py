@@ -230,7 +230,11 @@ st.info(
     "disaster-warning system."
 )
 
-
+# Automatic dashboard refresh every 60 seconds
+st_autorefresh(
+    interval=60 * 1000,
+    key="dashboard_refresh"
+)
 # =====================================================
 # SIDEBAR
 # =====================================================
