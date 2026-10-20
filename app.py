@@ -226,7 +226,6 @@ if weather_records:
     )
 else:
     st.warning("Weather data is currently unavailable.")
-
 weather_records = []
 weather_errors = []
 earthquake_records = []
