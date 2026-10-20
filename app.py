@@ -631,7 +631,13 @@ earthquake_df = pd.DataFrame(
 
 st.divider()
 
-st.header("🌎 Global Earthquake Intelligence")
+minimum_magnitude = st.slider(
+    "Minimum earthquake magnitude",
+    min_value=0.0,
+    max_value=9.0,
+    value=4.0,
+    step=0.5
+)
 
 if not earthquake_df.empty:
 
@@ -726,15 +732,21 @@ if not earthquake_df.empty:
         "Status"
     ]
 
-    st.dataframe(
-        display_quakes[display_columns].sort_values(
-            "Time",
-            ascending=False,
-            na_position="last"
-        ),
-        use_container_width=True,
-        hide_index=True
+    filtered_quakes = display_quakes[
+    display_quakes["Magnitude"].notna()
+    & (
+        display_quakes["Magnitude"]
+        >= minimum_magnitude
     )
+]
+
+st.caption(
+    f"Showing {len(filtered_quakes)} earthquakes "
+    f"with magnitude ≥ {minimum_magnitude:.1f}"
+)
+
+st.dataframe(
+    filtered_quakes[display_columns].sort_values(
 
     st.download_button(
         "⬇️ Download Earthquake Data",
