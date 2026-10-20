@@ -216,13 +216,10 @@ if st.button("🔄 Refresh Data Now"):
 # FETCH DATA
 # --------------------------------------------------
 
-st.subheader("📡 Live Data Sources")
+st.subheader("📍 Regional Monitoring Map")
 
-st.markdown(
-    """
-    - **Weather:** Open-Meteo API
-    - **Earthquakes:** USGS earthquake feed
-    """
+st.map(
+    weather_df[["Latitude", "Longitude"]]
 )
 
 weather_records = []
