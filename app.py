@@ -2,60 +2,93 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
 
-from datetime import datetime, timezone
-#hi
-
-# =====================================================
-# PAGE CONFIGURATION
-# =====================================================
+# =========================================================
+# MULTI-SOURCE DISASTER INTELLIGENCE SYSTEM
+# Educational Big Data Analytics Project
+# =========================================================
 
 st.set_page_config(
-    page_title="Disaster Intelligence Dashboard",
+    page_title="Disaster Intelligence System",
     page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
+# Automatically refresh the dashboard every 60 seconds
+st_autorefresh(interval=60 * 1000, key="auto_refresh")
 
-# =====================================================
-# CONSTANTS
-# =====================================================
+st.title("🌍 Multi-Source Disaster Intelligence System")
+
+st.markdown("""
+Monitor weather conditions, rainfall forecasts, and global earthquake
+activity using public data sources.
+""")
+
+st.warning(
+    "Educational prototype only. This dashboard is not an official "
+    "disaster warning system. Always follow official advisories."
+)
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
 
 LOCATIONS = {
-    "Mumbai": (19.0760, 72.8777),
-    "Pune": (18.5204, 73.8567),
-    "Thane": (19.2183, 72.9781),
-    "Nashik": (19.9975, 73.7898),
-    "Kolhapur": (16.7050, 74.2433)
+    "Mumbai": {"latitude": 19.0760, "longitude": 72.8777},
+    "Pune": {"latitude": 18.5204, "longitude": 73.8567},
+    "Thane": {"latitude": 19.2183, "longitude": 72.9781},
+    "Nashik": {"latitude": 19.9975, "longitude": 73.7898},
+    "Kolhapur": {"latitude": 16.7050, "longitude": 74.2433},
 }
 
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 USGS_URL = (
-    "https://earthquake.usgs.gov/earthquakes/"
-    "feed/v1.0/summary/all_day.geojson"
+    "https://earthquake.usgs.gov/earthquakes/feed/v1.0/"
+    "summary/all_day.geojson"
 )
 
+LOCAL_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
-# =====================================================
-# DATA FUNCTIONS
-# =====================================================
+
+# =========================================================
+# RAINFALL SCREENING
+# =========================================================
+
+def rainfall_level(rainfall, probability):
+
+    if pd.notna(rainfall) and rainfall >= 50:
+        return "High"
+
+    if (
+        (pd.notna(rainfall) and rainfall >= 20)
+        or
+        (pd.notna(probability) and probability >= 70)
+    ):
+        return "Moderate"
+
+    return "Lower"
+
+
+# =========================================================
+# FETCH WEATHER AND HOURLY FORECAST
+# =========================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_weather():
 
-    records = []
+    current_records = []
+    hourly_records = []
     errors = []
 
     for city, coordinates in LOCATIONS.items():
 
-        latitude, longitude = coordinates
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
+        parameters = {
+            "latitude": coordinates["latitude"],
+            "longitude": coordinates["longitude"],
             "current": (
                 "temperature_2m,"
                 "relative_humidity_2m,"
@@ -67,104 +100,130 @@ def fetch_weather():
                 "precipitation,"
                 "precipitation_probability"
             ),
-            "forecast_days": 1,
-            "timezone": "Asia/Kolkata"
+            "forecast_days": 2,
+            "timezone": "Asia/Kolkata",
         }
 
         try:
 
             response = requests.get(
                 WEATHER_URL,
-                params=params,
+                params=parameters,
                 timeout=15
             )
 
             response.raise_for_status()
-
             data = response.json()
 
-            current = data["current"]
-            hourly = data["hourly"]
+            current = data.get("current", {})
+            hourly = data.get("hourly", {})
 
-            # Build hourly forecast table.
             hourly_df = pd.DataFrame({
-                "time": pd.to_datetime(hourly["time"]),
-                "rainfall": hourly["precipitation"],
-                "probability": hourly[
-                    "precipitation_probability"
-                ]
+                "Time": hourly.get("time", []),
+                "Rainfall (mm)": hourly.get("precipitation", []),
+                "Rain probability (%)": hourly.get(
+                    "precipitation_probability", []
+                ),
             })
 
-            current_time = pd.to_datetime(
-                current["time"]
-            )
+            if not hourly_df.empty:
 
-            future_df = hourly_df[
-                hourly_df["time"] >= current_time
-            ].head(6)
-
-            rainfall_6h = float(
-                future_df["rainfall"].fillna(0).sum()
-            )
-
-            rain_probability = (
-                float(
-                    future_df["probability"].max()
+                hourly_df["Time"] = pd.to_datetime(
+                    hourly_df["Time"],
+                    errors="coerce"
                 )
-                if not future_df.empty
-                and future_df["probability"].notna().any()
-                else None
-            )
 
-            # Illustrative indicator, not a validated
-            # flood-prediction model.
-            if rainfall_6h >= 50:
-                risk = "High"
-            elif (
-                rainfall_6h >= 20
-                or (
-                    rain_probability is not None
-                    and rain_probability >= 70
+                now = (
+                    pd.Timestamp.now(tz="Asia/Kolkata")
+                    .tz_localize(None)
                 )
-            ):
-                risk = "Moderate"
+
+                next_6_hours = hourly_df[
+                    (hourly_df["Time"] >= now)
+                    &
+                    (
+                        hourly_df["Time"]
+                        < now + pd.Timedelta(hours=6)
+                    )
+                ]
+
+                next_24_hours = hourly_df[
+                    (hourly_df["Time"] >= now)
+                    &
+                    (
+                        hourly_df["Time"]
+                        < now + pd.Timedelta(hours=24)
+                    )
+                ]
+
+                rainfall_6h = pd.to_numeric(
+                    next_6_hours["Rainfall (mm)"],
+                    errors="coerce"
+                ).sum(min_count=1)
+
+                probability_24h = pd.to_numeric(
+                    next_24_hours["Rain probability (%)"],
+                    errors="coerce"
+                ).max()
+
+                for _, row in next_24_hours.iterrows():
+
+                    hourly_records.append({
+                        "City": city,
+                        "Time": row["Time"],
+                        "Rainfall (mm)": row["Rainfall (mm)"],
+                        "Rain probability (%)": row[
+                            "Rain probability (%)"
+                        ],
+                    })
+
             else:
-                risk = "Lower"
+                rainfall_6h = float("nan")
+                probability_24h = float("nan")
 
-            records.append({
-                "Location": city,
+            current_records.append({
+                "City": city,
                 "Temperature (°C)": current.get(
                     "temperature_2m"
                 ),
                 "Humidity (%)": current.get(
                     "relative_humidity_2m"
                 ),
-                "Current Precipitation (mm)": current.get(
+                "Current precipitation (mm)": current.get(
                     "precipitation"
                 ),
-                "Wind Speed (km/h)": current.get(
+                "Current rain (mm)": current.get("rain"),
+                "Wind speed (km/h)": current.get(
                     "wind_speed_10m"
                 ),
-                "Next 6h Rainfall (mm)": round(
-                    rainfall_6h, 2
+                "Rainfall next 6h (mm)": rainfall_6h,
+                "Max rain probability next 24h (%)": probability_24h,
+                "Risk indicator": rainfall_level(
+                    rainfall_6h,
+                    probability_24h
                 ),
-                "Max Rain Probability (%)": rain_probability,
-                "Rainfall Indicator": risk,
-                "Latitude": latitude,
-                "Longitude": longitude,
-                "Weather Model Time": current.get(
+                "Latitude": coordinates["latitude"],
+                "Longitude": coordinates["longitude"],
+                "Model/data time": current.get(
                     "time", "Unavailable"
-                )
+                ),
             })
 
-        except Exception as error:
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            TypeError
+        ) as error:
 
-            errors.append(
-                f"{city}: {str(error)[:150]}"
-            )
+            errors.append(f"{city}: {error}")
 
-    return records, errors
+    return current_records, hourly_records, errors
 
+
+# =========================================================
+# FETCH EARTHQUAKE DATA
+# =========================================================
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_earthquakes():
@@ -175,643 +234,612 @@ def fetch_earthquakes():
     )
 
     response.raise_for_status()
-
     data = response.json()
 
     records = []
 
     for feature in data.get("features", []):
 
-        properties = feature.get("properties", {})
+        properties = feature.get("properties") or {}
         geometry = feature.get("geometry") or {}
-        coordinates = geometry.get("coordinates")
+        coordinates = geometry.get("coordinates") or []
 
-        if not coordinates:
+        if len(coordinates) < 3:
             continue
 
-        longitude, latitude, depth = coordinates
+        timestamp = properties.get("time")
+
+        if timestamp is not None:
+            event_time = datetime.fromtimestamp(
+                timestamp / 1000,
+                tz=LOCAL_TIMEZONE
+            ).strftime("%d %b %Y, %I:%M:%S %p IST")
+        else:
+            event_time = "Unknown"
 
         records.append({
             "Place": properties.get(
-                "place", "Unknown"
+                "place", "Unknown location"
             ),
             "Magnitude": properties.get("mag"),
-            "Time": properties.get("time"),
-            "Latitude": latitude,
-            "Longitude": longitude,
-            "Depth (km)": depth,
-            "Status": properties.get(
-                "status", "Unknown"
-            ),
-            "Event URL": properties.get("url", "")
+            "Time (IST)": event_time,
+            "Longitude": coordinates[0],
+            "Latitude": coordinates[1],
+            "Depth (km)": coordinates[2],
+            "Status": properties.get("status", "Unknown"),
+            "Event URL": properties.get("url", ""),
         })
 
     return records
 
 
-# =====================================================
-# HEADER
-# =====================================================
+# =========================================================
+# SIDEBAR CONTROLS
+# =========================================================
 
-st.title("🌍 Multi-Source Disaster Intelligence System")
+st.sidebar.header("Dashboard Controls")
 
-st.markdown(
-    """
-    ### Real-Time Environmental Monitoring & Disaster Analytics
-
-    Integrating weather information and earthquake feeds
-    to support environmental monitoring and disaster analysis.
-    """
-)
-
-st.info(
-    "Educational prototype. Data availability and update "
-    "frequency depend on the source. This is not an official "
-    "disaster-warning system."
-)
-
-# Automatic dashboard refresh every 60 seconds
-st_autorefresh(
-    interval=60 * 1000,
-    key="dashboard_refresh"
-)
-# =====================================================
-# SIDEBAR
-# =====================================================
-
-st.sidebar.title("⚙️ Dashboard Controls")
-
-st.sidebar.write(
-    "Monitor weather across five Maharashtra locations "
-    "and review global earthquake events."
-)
-
-if st.sidebar.button("🔄 Refresh All Data"):
+if st.sidebar.button(
+    "🔄 Refresh source data now",
+    use_container_width=True
+):
 
     fetch_weather.clear()
     fetch_earthquakes.clear()
-
     st.rerun()
 
-st.sidebar.markdown("---")
-
-st.sidebar.markdown(
-    """
-    **Data Sources**
-
-    - Open-Meteo Weather API
-    - USGS Earthquake Feed
-
-    **Technologies**
-
-    - Python
-    - Pandas
-    - Streamlit
-    - Plotly
-    """
-)
+st.sidebar.caption("Dashboard refresh: 60 seconds")
+st.sidebar.caption("Weather cache: 5 minutes")
+st.sidebar.caption("Earthquake cache: 1 minute")
 
 
-# =====================================================
-# RETRIEVE DATA
-# =====================================================
+# =========================================================
+# LOAD DATA
+# =========================================================
 
-weather_records = []
-weather_errors = []
+with st.spinner("Loading live-source data..."):
 
-earthquake_records = []
-earthquake_error = None
+    weather_records, hourly_records, weather_errors = (
+        fetch_weather()
+    )
 
-with st.spinner("Retrieving external data sources..."):
-
-    weather_records, weather_errors = fetch_weather()
+    earthquake_error = None
 
     try:
         earthquake_records = fetch_earthquakes()
 
-    except Exception as error:
-        earthquake_error = str(error)[:200]
+    except (
+        requests.RequestException,
+        ValueError,
+        KeyError,
+        TypeError
+    ) as error:
+
+        earthquake_records = []
+        earthquake_error = str(error)
 
 
-retrieved_at = datetime.now(
-    timezone.utc
-).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-st.caption(
-    f"Application retrieval time: {retrieved_at}"
-)
-
-st.caption(
-    "Weather data may be model-based rather than direct "
-    "physical measurements. Retrieval time does not indicate "
-    "when the underlying source last updated its data."
-)
-
-
-# =====================================================
-# WEATHER DATAFRAME
-# =====================================================
-
-# Always define the DataFrame before any section uses it.
 weather_df = pd.DataFrame(weather_records)
+hourly_df = pd.DataFrame(hourly_records)
+earthquake_df = pd.DataFrame(earthquake_records)
+
+st.caption(
+    "Dashboard checked at: "
+    + datetime.now(LOCAL_TIMEZONE).strftime(
+        "%d %b %Y, %I:%M:%S %p IST"
+    )
+)
+
+if weather_errors:
+
+    with st.expander("Weather source messages"):
+
+        for error in weather_errors:
+            st.warning(error)
+
+if earthquake_error:
+    st.warning(
+        f"Earthquake data is temporarily unavailable: "
+        f"{earthquake_error}"
+    )
 
 
-# =====================================================
+# =========================================================
 # WEATHER DASHBOARD
-# =====================================================
+# =========================================================
 
-st.header("🌦️ Regional Weather Monitoring")
+st.header("🌦️ Weather and Rainfall Monitoring")
 
-if not weather_df.empty:
+st.info(
+    "Weather information is provided by Open-Meteo. Current conditions "
+    "may be model-derived rather than direct weather-station observations."
+)
+
+if weather_df.empty:
+
+    st.error(
+        "Weather data is unavailable. Try refreshing the source data."
+    )
+
+else:
+
+    rainfall_values = pd.to_numeric(
+        weather_df["Rainfall next 6h (mm)"],
+        errors="coerce"
+    )
+
+    wind_values = pd.to_numeric(
+        weather_df["Wind speed (km/h)"],
+        errors="coerce"
+    )
 
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Locations Reporting",
+        "Locations monitored",
         len(weather_df)
     )
 
-    average_temp = weather_df[
-        "Temperature (°C)"
-    ].mean()
-
     col2.metric(
-        "Average Temperature",
+        "Highest forecast rainfall",
         (
-            f"{average_temp:.1f} °C"
-            if pd.notna(average_temp)
-            else "Unavailable"
+            f"{rainfall_values.max():.1f} mm"
+            if rainfall_values.notna().any()
+            else "N/A"
         )
     )
-
-    max_rain = weather_df[
-        "Next 6h Rainfall (mm)"
-    ].max()
 
     col3.metric(
-        "Maximum Forecast Rainfall",
+        "Highest wind speed",
         (
-            f"{max_rain:.1f} mm"
-            if pd.notna(max_rain)
-            else "Unavailable"
+            f"{wind_values.max():.1f} km/h"
+            if wind_values.notna().any()
+            else "N/A"
         )
     )
 
-    st.subheader("Weather Conditions by Location")
+    # Current conditions table
 
-    weather_columns = [
-        "Location",
+    st.subheader("Current Conditions")
+
+    columns_to_show = [
+        "City",
         "Temperature (°C)",
         "Humidity (%)",
-        "Current Precipitation (mm)",
-        "Wind Speed (km/h)",
-        "Next 6h Rainfall (mm)",
-        "Max Rain Probability (%)",
-        "Rainfall Indicator"
+        "Current precipitation (mm)",
+        "Wind speed (km/h)",
+        "Rainfall next 6h (mm)",
+        "Max rain probability next 24h (%)",
+        "Risk indicator",
+        "Model/data time",
     ]
 
     st.dataframe(
-        weather_df[weather_columns],
+        weather_df[columns_to_show].round(1),
         use_container_width=True,
         hide_index=True
     )
 
-    st.subheader("📈 Hourly Rainfall Forecast")
+    # Alert panel
 
-hourly_frames = []
+    st.subheader("🚨 Preliminary Rainfall Alerts")
 
-for city, coordinates in LOCATIONS.items():
+    high_alerts = weather_df[
+        weather_df["Risk indicator"] == "High"
+    ]
 
-    latitude, longitude = coordinates
+    moderate_alerts = weather_df[
+        weather_df["Risk indicator"] == "Moderate"
+    ]
 
-    try:
-        response = requests.get(
-            WEATHER_URL,
-            params={
-                "latitude": latitude,
-                "longitude": longitude,
-                "hourly": "precipitation",
-                "forecast_days": 1,
-                "timezone": "Asia/Kolkata"
-            },
-            timeout=15
+    if not high_alerts.empty:
+
+        for _, row in high_alerts.iterrows():
+
+            rainfall = row["Rainfall next 6h (mm)"]
+
+            st.error(
+                f"HIGH SCREENING INDICATOR — {row['City']}: "
+                f"{rainfall:.1f} mm forecast rainfall "
+                f"over the next 6 hours."
+            )
+
+    if not moderate_alerts.empty:
+
+        for _, row in moderate_alerts.iterrows():
+
+            rainfall = row["Rainfall next 6h (mm)"]
+            probability = row[
+                "Max rain probability next 24h (%)"
+            ]
+
+            rainfall_text = (
+                f"{rainfall:.1f} mm"
+                if pd.notna(rainfall)
+                else "N/A"
+            )
+
+            probability_text = (
+                f"{probability:.0f}%"
+                if pd.notna(probability)
+                else "N/A"
+            )
+
+            st.warning(
+                f"MODERATE SCREENING INDICATOR — {row['City']}: "
+                f"next-6-hour rainfall {rainfall_text}; "
+                f"maximum hourly rain probability in the next "
+                f"24 hours {probability_text}."
+            )
+
+    if high_alerts.empty and moderate_alerts.empty:
+
+        st.success(
+            "No locations currently cross this prototype's "
+            "rainfall screening thresholds. This does not guarantee "
+            "that conditions are safe."
         )
 
-        response.raise_for_status()
+    # Bar charts
 
-        hourly_data = response.json()["hourly"]
+    chart_col1, chart_col2 = st.columns(2)
 
-        city_df = pd.DataFrame({
-            "Time": pd.to_datetime(
-                hourly_data["time"]
-            ),
-            "Rainfall (mm)": hourly_data[
-                "precipitation"
-            ],
-            "Location": city
-        })
+    with chart_col1:
 
-        hourly_frames.append(city_df)
+        rainfall_chart = weather_df.copy()
 
-    except Exception:
-        continue
+        rainfall_chart["Rainfall next 6h (mm)"] = pd.to_numeric(
+            rainfall_chart["Rainfall next 6h (mm)"],
+            errors="coerce"
+        )
 
-if hourly_frames:
-
-    hourly_df = pd.concat(
-        hourly_frames,
-        ignore_index=True
-    )
-
-    rainfall_line = px.line(
-        hourly_df,
-        x="Time",
-        y="Rainfall (mm)",
-        color="Location",
-        markers=True,
-        title="Hourly Precipitation Forecast"
-    )
-
-    st.plotly_chart(
-        rainfall_line,
-        use_container_width=True
-    )
-
-else:
-    st.warning(
-        "Hourly rainfall information is temporarily unavailable."
-    )
-
-    rainfall_fig = px.bar(
-        weather_df,
-        x="Location",
-        y="Next 6h Rainfall (mm)",
-        color="Rainfall Indicator",
-        title="Forecast Precipitation Over the Next Six Hours"
-    )
-
-    st.plotly_chart(
-        rainfall_fig,
-        use_container_width=True
-    )
-
-    st.subheader("🌡️ Temperature Comparison")
-
-    temperature_df = weather_df.dropna(
-        subset=["Temperature (°C)"]
-    )
-
-    if not temperature_df.empty:
-
-        temperature_fig = px.bar(
-            temperature_df,
-            x="Location",
-            y="Temperature (°C)",
-            title="Current Weather-Model Temperature"
+        figure = px.bar(
+            rainfall_chart,
+            x="City",
+            y="Rainfall next 6h (mm)",
+            title="Forecast Rainfall — Next 6 Hours",
+            labels={
+                "Rainfall next 6h (mm)": "Rainfall (mm)"
+            }
         )
 
         st.plotly_chart(
-            temperature_fig,
+            figure,
             use_container_width=True
         )
 
-    st.subheader("📍 Regional Monitoring Map")
+    with chart_col2:
 
-    # st.map expects latitude/longitude columns.
-    # Rename explicitly for compatibility.
-    map_df = weather_df[
-        ["Latitude", "Longitude"]
-    ].copy()
+        temperature_chart = weather_df.copy()
 
-    map_df.columns = ["latitude", "longitude"]
+        temperature_chart["Temperature (°C)"] = pd.to_numeric(
+            temperature_chart["Temperature (°C)"],
+            errors="coerce"
+        )
 
-    map_df = map_df.dropna(
-        subset=["latitude", "longitude"]
-    )
+        figure = px.bar(
+            temperature_chart,
+            x="City",
+            y="Temperature (°C)",
+            title="Current Modelled Temperature"
+        )
 
-    if not map_df.empty:
+        st.plotly_chart(
+            figure,
+            use_container_width=True
+        )
 
-        st.map(map_df)
+    # Hourly forecast graphs
+
+    st.subheader("📈 Hourly Forecast — Next 24 Hours")
+
+    if not hourly_df.empty:
+
+        hourly_df["Time"] = pd.to_datetime(
+            hourly_df["Time"],
+            errors="coerce"
+        )
+
+        hourly_df["Rainfall (mm)"] = pd.to_numeric(
+            hourly_df["Rainfall (mm)"],
+            errors="coerce"
+        )
+
+        hourly_df["Rain probability (%)"] = pd.to_numeric(
+            hourly_df["Rain probability (%)"],
+            errors="coerce"
+        )
+
+        selected_cities = st.multiselect(
+            "Select locations",
+            options=list(LOCATIONS.keys()),
+            default=["Mumbai", "Pune"]
+        )
+
+        selected_data = hourly_df[
+            hourly_df["City"].isin(selected_cities)
+        ]
+
+        if not selected_data.empty:
+
+            rainfall_figure = px.line(
+                selected_data,
+                x="Time",
+                y="Rainfall (mm)",
+                color="City",
+                markers=True,
+                title="Hourly Rainfall Forecast",
+                labels={
+                    "Time": "Time (IST)",
+                    "Rainfall (mm)": "Forecast rainfall (mm)"
+                }
+            )
+
+            st.plotly_chart(
+                rainfall_figure,
+                use_container_width=True
+            )
+
+            probability_figure = px.line(
+                selected_data,
+                x="Time",
+                y="Rain probability (%)",
+                color="City",
+                markers=True,
+                title="Hourly Precipitation Probability",
+                labels={
+                    "Time": "Time (IST)",
+                    "Rain probability (%)": "Probability (%)"
+                }
+            )
+
+            st.plotly_chart(
+                probability_figure,
+                use_container_width=True
+            )
+
+        else:
+
+            st.info(
+                "Select at least one city to display the forecast."
+            )
 
     else:
 
-        st.warning(
-            "Location coordinates are currently unavailable."
-        )
+        st.info("Hourly forecast data is currently unavailable.")
 
-    st.subheader("🚨 Environmental Monitoring Alerts")
+    # Weather map
 
-alerts = []
+    st.subheader("📍 Weather Monitoring Locations")
 
-for _, row in weather_df.iterrows():
+    weather_map = weather_df[
+        ["Latitude", "Longitude"]
+    ].copy()
 
-    rainfall = row["Next 6h Rainfall (mm)"]
-    probability = row["Max Rain Probability (%)"]
+    weather_map.columns = ["latitude", "longitude"]
 
-    if pd.isna(rainfall):
-        continue
+    st.map(weather_map, use_container_width=True)
 
-    if rainfall >= 50:
-
-        alerts.append({
-            "Location": row["Location"],
-            "Level": "HIGH",
-            "Reason": (
-                f"{rainfall:.1f} mm forecast rainfall "
-                "over the next six hours"
-            )
-        })
-
-    elif (
-        rainfall >= 20
-        or (
-            pd.notna(probability)
-            and probability >= 70
-        )
-    ):
-
-        alerts.append({
-            "Location": row["Location"],
-            "Level": "MODERATE",
-            "Reason": (
-                f"Forecast rainfall: {rainfall:.1f} mm; "
-                f"maximum precipitation probability: "
-                f"{probability if pd.notna(probability) else 'N/A'}%"
-            )
-        })
-
-if alerts:
-
-    for alert in alerts:
-
-        message = (
-            f"{alert['Location']}: {alert['Reason']}. "
-            "This is an experimental indicator, not an "
-            "official flood warning."
-        )
-
-        if alert["Level"] == "HIGH":
-            st.error("🔴 HIGH INDICATOR — " + message)
-
-        else:
-            st.warning("🟠 MODERATE INDICATOR — " + message)
-
-else:
-
-    st.success(
-        "No locations currently cross the configured "
-        "rainfall screening thresholds. This does not "
-        "establish that conditions are safe."
-    )
-
-    st.write(
-        "These categories use illustrative rainfall and "
-        "precipitation-probability thresholds. They are not "
-        "validated flood predictions or official warnings."
-    )
-
-    st.dataframe(
-        weather_df[
-            [
-                "Location",
-                "Next 6h Rainfall (mm)",
-                "Max Rain Probability (%)",
-                "Rainfall Indicator"
-            ]
-        ],
-        use_container_width=True,
-        hide_index=True
-    )
+    # Download weather data
 
     st.download_button(
-        "⬇️ Download Weather Data",
-        data=weather_df.to_csv(index=False),
+        "⬇️ Download Weather Data CSV",
+        data=weather_df.to_csv(
+            index=False
+        ).encode("utf-8"),
         file_name="weather_monitoring.csv",
         mime="text/csv"
     )
 
-    with st.expander("Weather Model Timestamps"):
 
-        st.dataframe(
-            weather_df[
-                ["Location", "Weather Model Time"]
-            ],
-            use_container_width=True,
-            hide_index=True
-        )
+# =========================================================
+# EARTHQUAKE DASHBOARD
+# =========================================================
+
+st.header("🌐 Global Earthquake Monitoring")
+
+st.caption(
+    "Source: USGS global all-day earthquake feed. Earthquake events "
+    "can be revised. This data cannot predict earthquakes."
+)
+
+if earthquake_df.empty:
+
+    if not earthquake_error:
+        st.info("No earthquake records were returned by the feed.")
 
 else:
 
-    st.warning(
-        "Weather information is temporarily unavailable. "
-        "Please try refreshing the data."
+    earthquake_df["Magnitude"] = pd.to_numeric(
+        earthquake_df["Magnitude"],
+        errors="coerce"
     )
 
-
-if weather_errors:
-
-    with st.expander("Weather Source Diagnostics"):
-
-        for message in weather_errors:
-            st.write(message)
-
-
-# =====================================================
-# EARTHQUAKE DATAFRAME
-# =====================================================
-
-earthquake_df = pd.DataFrame(
-    earthquake_records
-)
-
-
-# =====================================================
-# EARTHQUAKE DASHBOARD
-# =====================================================
-
-st.divider()
-
-minimum_magnitude = st.slider(
-    "Minimum earthquake magnitude",
-    min_value=0.0,
-    max_value=9.0,
-    value=4.0,
-    step=0.5
-)
-
-if not earthquake_df.empty:
-
-    valid_magnitudes = earthquake_df[
-        "Magnitude"
-    ].dropna()
+    earthquake_df["Depth (km)"] = pd.to_numeric(
+        earthquake_df["Depth (km)"],
+        errors="coerce"
+    )
 
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Events in USGS Feed",
+        "Events in feed",
         len(earthquake_df)
     )
 
+    magnitudes = earthquake_df["Magnitude"].dropna()
+
     col2.metric(
-        "Magnitude ≥ 4",
-        int(
-            (valid_magnitudes >= 4).sum()
+        "Largest magnitude",
+        (
+            f"{magnitudes.max():.1f}"
+            if not magnitudes.empty
+            else "N/A"
         )
     )
 
     col3.metric(
-        "Largest Magnitude",
-        (
-            f"{valid_magnitudes.max():.1f}"
-            if not valid_magnitudes.empty
-            else "Unavailable"
-        )
+        "Events magnitude 4.0+",
+        int((earthquake_df["Magnitude"] >= 4.0).sum())
     )
 
-    st.subheader("📈 Earthquake Magnitude Distribution")
+    # Magnitude filter
 
-    if not valid_magnitudes.empty:
+    minimum_magnitude = st.slider(
+        "Minimum earthquake magnitude",
+        min_value=0.0,
+        max_value=9.0,
+        value=4.0,
+        step=0.5
+    )
 
-        magnitude_df = earthquake_df.dropna(
-            subset=["Magnitude"]
+    filtered_quakes = earthquake_df[
+        earthquake_df["Magnitude"].notna()
+        &
+        (
+            earthquake_df["Magnitude"]
+            >= minimum_magnitude
         )
+    ].copy()
 
-        magnitude_fig = px.histogram(
-            magnitude_df,
+    st.write(
+        f"Showing **{len(filtered_quakes)}** events with "
+        f"magnitude ≥ {minimum_magnitude:.1f}."
+    )
+
+    if not filtered_quakes.empty:
+
+        # Magnitude distribution
+
+        magnitude_figure = px.histogram(
+            filtered_quakes,
             x="Magnitude",
             nbins=20,
-            title="Distribution of Earthquake Magnitudes"
+            title="Earthquake Magnitude Distribution"
         )
 
         st.plotly_chart(
-            magnitude_fig,
+            magnitude_figure,
             use_container_width=True
         )
 
-    st.subheader("🗺️ Global Earthquake Map")
+        # Earthquake map
 
-    quake_map_df = earthquake_df[
-        ["Latitude", "Longitude"]
-    ].copy()
+        st.subheader("📍 Earthquake Event Map")
 
-    quake_map_df.columns = [
-        "latitude",
-        "longitude"
-    ]
+        quake_map = filtered_quakes[
+            ["Latitude", "Longitude"]
+        ].copy()
 
-    quake_map_df = quake_map_df.dropna(
-        subset=["latitude", "longitude"]
-    )
+        quake_map["Latitude"] = pd.to_numeric(
+            quake_map["Latitude"],
+            errors="coerce"
+        )
 
-    if not quake_map_df.empty:
+        quake_map["Longitude"] = pd.to_numeric(
+            quake_map["Longitude"],
+            errors="coerce"
+        )
 
-        st.map(quake_map_df)
+        quake_map = quake_map.dropna()
+
+        if not quake_map.empty:
+
+            quake_map.columns = [
+                "latitude",
+                "longitude"
+            ]
+
+            st.map(
+                quake_map,
+                use_container_width=True
+            )
+
+        # Earthquake table
+
+        st.subheader("Earthquake Event Records")
+
+        st.dataframe(
+            filtered_quakes[
+                [
+                    "Place",
+                    "Magnitude",
+                    "Time (IST)",
+                    "Depth (km)",
+                    "Status",
+                    "Event URL",
+                ]
+            ].sort_values(
+                "Magnitude",
+                ascending=False,
+                na_position="last"
+            ),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Event URL": st.column_config.LinkColumn(
+                    "USGS Event Details"
+                )
+            }
+        )
+
+        # Download earthquake data
+
+        st.download_button(
+            "⬇️ Download Earthquake Data CSV",
+            data=filtered_quakes.to_csv(
+                index=False
+            ).encode("utf-8"),
+            file_name="earthquake_events.csv",
+            mime="text/csv"
+        )
 
     else:
 
         st.info(
-            "Earthquake coordinates are unavailable."
+            "No earthquake events meet the selected magnitude threshold."
         )
 
-    st.subheader("Recent Earthquake Records")
 
-    display_quakes = earthquake_df.copy()
+# =========================================================
+# METHODOLOGY AND LIMITATIONS
+# =========================================================
 
-    display_quakes["Time"] = pd.to_datetime(
-        display_quakes["Time"],
-        unit="ms",
-        utc=True,
-        errors="coerce"
-    ).dt.strftime("%Y-%m-%d %H:%M UTC")
+with st.expander(
+    "ℹ️ Methodology, Data Sources and Limitations"
+):
 
-    display_columns = [
-        "Place",
-        "Magnitude",
-        "Time",
-        "Depth (km)",
-        "Status"
-    ]
+    st.markdown("""
+    ### Data sources
 
-    filtered_quakes = display_quakes[
-    display_quakes["Magnitude"].notna()
-    & (
-        display_quakes["Magnitude"]
-        >= minimum_magnitude
-    )
-]
+    - **Weather:** Open-Meteo forecast API.
+    - **Earthquakes:** USGS global all-day GeoJSON feed.
 
-st.caption(
-    f"Showing {len(filtered_quakes)} earthquakes "
-    f"with magnitude ≥ {minimum_magnitude:.1f}"
-)
+    ### Refresh behaviour
 
-st.dataframe(
-    filtered_quakes[display_columns].sort_values(
+    - Dashboard reruns every 60 seconds.
+    - Weather data is cached for 5 minutes.
+    - Earthquake data is cached for 1 minute.
+    - Use the sidebar refresh button to clear the caches.
 
-    st.download_button(
-        "⬇️ Download Earthquake Data",
-        data=earthquake_df.to_csv(index=False),
-        file_name="usgs_earthquakes.csv",
-        mime="text/csv"
-    )
+    ### Prototype rainfall indicators
 
-else:
+    - **High:** Forecast rainfall in the next 6 hours is at least 50 mm.
+    - **Moderate:** Forecast rainfall in the next 6 hours is at least 20 mm,
+      or maximum hourly precipitation probability in the next 24 hours is
+      at least 70%.
+    - **Lower:** Neither threshold is crossed.
 
-    st.warning(
-        "Earthquake data is currently unavailable."
-    )
+    These are illustrative project thresholds, not validated meteorological
+    criteria or official warnings. Forecasts can change and data sources can
+    fail or be delayed. Current weather conditions may be model-derived.
+    Earthquakes cannot be reliably predicted from this feed.
 
-    if earthquake_error:
-
-        with st.expander("Earthquake Source Diagnostics"):
-            st.write(earthquake_error)
-
-
-# =====================================================
-# METHODOLOGY
-# =====================================================
-
-st.divider()
-
-st.header("📚 Data Sources & Methodology")
-
-st.markdown(
-    """
-    **Source 1 — Open-Meteo**
-
-    Provides weather-model current conditions and hourly
-    precipitation information for monitored locations.
-
-    **Source 2 — USGS**
-
-    Provides global earthquake event records for the
-    preceding 24 hours.
-
-    **Data processing**
-
-    Python requests retrieve JSON and GeoJSON data.
-    Pandas structures and processes the retrieved records.
-
-    **Analytics**
-
-    The dashboard compares weather conditions, summarizes
-    earthquake magnitudes, and calculates preliminary
-    rainfall indicators.
-
-    **Visualization**
-
-    Plotly charts and geographic maps display the results.
-
-    **Limitations**
-
-    The current version is an educational multi-source
-    analytics prototype. Its rainfall indicators have not
-    been validated as flood predictions. The application
-    does not replace official weather or disaster warnings.
-    """
-)
+    Do not use this prototype to make emergency decisions.
+    """)
 
 st.caption(
-    "Multi-Source Disaster Intelligence System | "
-    "Educational Big Data Analytics Prototype"
+    "Built as an educational Big Data Analytics project. "
+    "Follow official government and disaster-management advisories "
+    "during emergencies."
 )
