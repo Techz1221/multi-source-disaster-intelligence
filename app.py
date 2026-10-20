@@ -376,7 +376,71 @@ if not weather_df.empty:
         hide_index=True
     )
 
-    st.subheader("🌧️ Forecast Rainfall Comparison")
+    st.subheader("📈 Hourly Rainfall Forecast")
+
+hourly_frames = []
+
+for city, coordinates in LOCATIONS.items():
+
+    latitude, longitude = coordinates
+
+    try:
+        response = requests.get(
+            WEATHER_URL,
+            params={
+                "latitude": latitude,
+                "longitude": longitude,
+                "hourly": "precipitation",
+                "forecast_days": 1,
+                "timezone": "Asia/Kolkata"
+            },
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        hourly_data = response.json()["hourly"]
+
+        city_df = pd.DataFrame({
+            "Time": pd.to_datetime(
+                hourly_data["time"]
+            ),
+            "Rainfall (mm)": hourly_data[
+                "precipitation"
+            ],
+            "Location": city
+        })
+
+        hourly_frames.append(city_df)
+
+    except Exception:
+        continue
+
+if hourly_frames:
+
+    hourly_df = pd.concat(
+        hourly_frames,
+        ignore_index=True
+    )
+
+    rainfall_line = px.line(
+        hourly_df,
+        x="Time",
+        y="Rainfall (mm)",
+        color="Location",
+        markers=True,
+        title="Hourly Precipitation Forecast"
+    )
+
+    st.plotly_chart(
+        rainfall_line,
+        use_container_width=True
+    )
+
+else:
+    st.warning(
+        "Hourly rainfall information is temporarily unavailable."
+    )
 
     rainfall_fig = px.bar(
         weather_df,
@@ -435,7 +499,70 @@ if not weather_df.empty:
             "Location coordinates are currently unavailable."
         )
 
-    st.subheader("⚠️ Preliminary Rainfall Indicators")
+    st.subheader("🚨 Environmental Monitoring Alerts")
+
+alerts = []
+
+for _, row in weather_df.iterrows():
+
+    rainfall = row["Next 6h Rainfall (mm)"]
+    probability = row["Max Rain Probability (%)"]
+
+    if pd.isna(rainfall):
+        continue
+
+    if rainfall >= 50:
+
+        alerts.append({
+            "Location": row["Location"],
+            "Level": "HIGH",
+            "Reason": (
+                f"{rainfall:.1f} mm forecast rainfall "
+                "over the next six hours"
+            )
+        })
+
+    elif (
+        rainfall >= 20
+        or (
+            pd.notna(probability)
+            and probability >= 70
+        )
+    ):
+
+        alerts.append({
+            "Location": row["Location"],
+            "Level": "MODERATE",
+            "Reason": (
+                f"Forecast rainfall: {rainfall:.1f} mm; "
+                f"maximum precipitation probability: "
+                f"{probability if pd.notna(probability) else 'N/A'}%"
+            )
+        })
+
+if alerts:
+
+    for alert in alerts:
+
+        message = (
+            f"{alert['Location']}: {alert['Reason']}. "
+            "This is an experimental indicator, not an "
+            "official flood warning."
+        )
+
+        if alert["Level"] == "HIGH":
+            st.error("🔴 HIGH INDICATOR — " + message)
+
+        else:
+            st.warning("🟠 MODERATE INDICATOR — " + message)
+
+else:
+
+    st.success(
+        "No locations currently cross the configured "
+        "rainfall screening thresholds. This does not "
+        "establish that conditions are safe."
+    )
 
     st.write(
         "These categories use illustrative rainfall and "
