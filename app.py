@@ -218,9 +218,14 @@ if st.button("🔄 Refresh Data Now"):
 
 st.subheader("📍 Regional Monitoring Map")
 
-st.map(
-    weather_df[["Latitude", "Longitude"]]
-)
+if weather_records:
+    st.map(
+        pd.DataFrame(weather_records)[
+            ["Latitude", "Longitude"]
+        ]
+    )
+else:
+    st.warning("Weather data is currently unavailable.")
 
 weather_records = []
 weather_errors = []
